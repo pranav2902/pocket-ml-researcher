@@ -1,11 +1,11 @@
 # pocket-ml-researcher
 
 This project aims to develop a RAG powered assistant to answer questions on various scientific research papers, currently limited to AI research.
+
 A ChatGPT-3.5 LLM is utilized, and augmented using Research papers written after 2022, to improve it's knowledge. This application is served through FastAPI and Streamlit.
 
 ### Add Research Papers to Knowledge Base
-Currently, 10 research papers from Arxiv are in the Knowledge base. You have the option to add more papers.
-
+The Arxiv papers from https://github.com/aimerou/awesome-ai-papers?tab=readme-ov-file have been included in the knowledge base.
 Currently, only adding Arxiv papers is supported.
 
 ### Query your Knowledge Base

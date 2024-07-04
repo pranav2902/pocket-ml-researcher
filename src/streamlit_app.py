@@ -15,6 +15,7 @@ if st.button("Add paper"):
 
 st.header("Ask a question")
 query = st.text_input("Enter question")
+# TODO: Separate streaming output into paragraphs if possible
 if st.button("Ask"):
     with st.spinner("Processing Response ..."):
         response = requests.post("http://localhost:8000/ask-question/", json={"question": query}, stream=True)
@@ -32,4 +33,5 @@ if st.button("Ask"):
                         resp_line.write(content)
         else:
             st.error("Failed to get Response")
+
 

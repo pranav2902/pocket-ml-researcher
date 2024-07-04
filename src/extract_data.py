@@ -1,4 +1,5 @@
 import pinecone
+import pypdf.errors
 import sys
 import time
 from langchain_community.document_loaders import PyPDFLoader
@@ -15,6 +16,8 @@ from langchain_core.documents import Document
 from langchain_openai import ChatOpenAI
 import hashlib
 from dotenv import load_dotenv
+import arxiv
+from tqdm import tqdm
 
 load_dotenv()
 
@@ -45,16 +48,27 @@ def load_pdf_into_index(codes, index_name):
     dims = 384
     index = create_pinecone_index(index_name, dims)
     metadata_list, new_docs = [], []
-    for code in codes:
-        file = "../arxiv_papers/arxiv-" + code + ".pdf"
+    for code in tqdm(codes):
+        filename = "arxiv-" + code + ".pdf"
+        file = "../arxiv_papers/" + filename
+        # Code to add paper to local dir if not already present
+        if filename not in os.listdir("../arxiv_papers/"):
+            logger.info("Downloading File from Arxiv")
+            client = arxiv.Client()
+            paper = next(client.results(arxiv.Search(id_list=[code])))
+            paper.download_pdf(dirpath="../arxiv_papers/",filename="arxiv-" + code + ".pdf")
         loader = PyPDFLoader(file)
-        pages_file = loader.load_and_split()
+        try:
+            pages_file = loader.load_and_split()
+        except pypdf.errors.PdfStreamError as e:
+            logging.error(f"ERROR: Failed to download PDF with code {code} due to error {e}\n")
+            continue
 
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=2000, chunk_overlap=400, add_start_index=True
         )
         pdf_splits = text_splitter.split_documents(pages_file)
-        for doc in pdf_splits:
+        for doc in tqdm(pdf_splits):
             if not is_document_stored(index, doc):
                 logger.info(f"Document is not stored, to upsert - code: {code}")
                 metadata = {"code": code}
@@ -184,19 +198,8 @@ async def return_response(vs, query: str, llm, top_k):
 
 
 if __name__ == "__main__":
-    file_path = "../arxiv_papers/arxiv-1301.3781"
-    codes = ["1301.3781",
-             # "1312.6114",
-             # "1409.0473",
-             # "1412.6980",
-             # "1505.04597",
-             # "1512.03385",
-             # "1810.04805",
-             # "2010.11929",
-             # "2109.01652",
-             # "2109.11978",
-             "2109.13226"]
-
+    files = [file for file in os.listdir("../arxiv_papers/") if file.endswith(".pdf")]
+    codes = [".".join(file.split("/")[-1].split("-")[-1].split(".")[:-1]) for file in files]
     dims = 384
     index_name = "pdf-store-1"
     logger.info("Creating Pinecone Index")
