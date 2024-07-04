@@ -10,3 +10,7 @@ langchain-openai
 pypdf
 pinecone
 python-dotenv
+fastapi
+uvicorn
+streamlit
+sse-starlette

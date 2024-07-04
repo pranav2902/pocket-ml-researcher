@@ -34,21 +34,40 @@ def generate_id(text):
     return hashlib.md5(text.encode('utf-8')).hexdigest()
 
 
-def load_and_chunk_pdf(code):
+def load_pdf_into_index(codes, index_name):
     """
-    Loads and chunks PDF from local system
-    :param code: arxiv paper code
+    Loads and chunks PDF from local system, and creates vectorstore
+    :param index_name: Name of PC index
+    :param codes: arxiv paper codes to be inserted
     :return: list of documents making up each pdf
     """
-    file = "../arxiv_papers/arxiv-" + code + ".pdf"
-    loader = PyPDFLoader(file)
-    pages_file = loader.load_and_split()
+    logger.info("Creating Pinecone Index if it doesn't exist")
+    dims = 384
+    index = create_pinecone_index(index_name, dims)
+    metadata_list, new_docs = [], []
+    for code in codes:
+        file = "../arxiv_papers/arxiv-" + code + ".pdf"
+        loader = PyPDFLoader(file)
+        pages_file = loader.load_and_split()
 
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=2000, chunk_overlap=400, add_start_index=True
-    )
-    pdf_splits = text_splitter.split_documents(pages_file)
-    return pdf_splits
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=2000, chunk_overlap=400, add_start_index=True
+        )
+        pdf_splits = text_splitter.split_documents(pages_file)
+        for doc in pdf_splits:
+            if not is_document_stored(index, doc):
+                logger.info(f"Document is not stored, to upsert - code: {code}")
+                metadata = {"code": code}
+                metadata_list.append(metadata)
+                new_docs.append(doc)
+    embeddings_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    if new_docs:
+        vs = init_vectorstore(new_docs, metadata_list, index_name, embeddings_model)
+        return vs
+    else:
+        logger.info("No New documents to be upserted")
+        vs = PineconeVectorStore(index_name=index_name, embedding=embeddings_model)
+        return None
 
 
 def create_pinecone_index(index_name: str, dim: int):
@@ -95,6 +114,7 @@ def is_document_stored(pc_index: pinecone.Index, doc) -> bool:
         print("Document exists in Index, returning")
         return True
 
+
 def init_vectorstore(docs_to_be_upserted: list[Document], metadata_list: list[dict], index_name: str,
                      embeddings: HuggingFaceEmbeddings) -> PineconeVectorStore:
     """
@@ -107,7 +127,7 @@ def init_vectorstore(docs_to_be_upserted: list[Document], metadata_list: list[di
     """
     texts = [d.page_content for d in docs_to_be_upserted]
     ids = [generate_id(text) for text in texts]
-    vs = PineconeVectorStore.from_texts(texts, index_name=index_name, embedding=embeddings,ids=ids,
+    vs = PineconeVectorStore.from_texts(texts, index_name=index_name, embedding=embeddings, ids=ids,
                                         metadatas=metadata_list)
     print("Completed upsert of documents")
     return vs
@@ -149,52 +169,8 @@ def generate_prompt(prompt_template=None) -> ChatPromptTemplate:
     return prompt
 
 
-if __name__ == "__main__":
-    embeddings_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    file_path = "../arxiv_papers/arxiv-1301.3781"
-    codes = ["1301.3781",
-             "1312.6114",
-             "1409.0473",
-             "1412.6980",
-             "1505.04597",
-             "1512.03385",
-             "1810.04805",
-             "2010.11929",
-             "2109.01652",
-             "2109.11978",
-             "2109.13226"]
-
-    dims = 384
-    index_name = "pdf-store-1"
-    logger.info("Creating Pinecone Index")
-    index = create_pinecone_index(index_name, dims)
-    metadata_list, new_docs = [], []
-    for code in codes:
-        logger.info(f"Loading and Chunking PDF code: {code}")
-        splits = load_and_chunk_pdf(code)
-        for doc in splits:
-            if not is_document_stored(index,doc):
-                logger.info(f"Document is not stored, to upsert - code: {code}")
-                metadata = {"code": code}
-                metadata_list.append(metadata)
-                new_docs.append(doc)
-
-    print(metadata_list)
-    if new_docs:
-        vs = init_vectorstore(new_docs, metadata_list, index_name, embeddings_model)
-    else:
-        # Check working of is_document_stored function
-        print("No New documents to be upserted")
-        vs = PineconeVectorStore(index_name=index_name,embedding=embeddings_model)
-    # Add support for loading w Arxiv code alone
-    logger.info("Testing retriever")
-    test_query = "Explain the architecture of an NNLM briefly"
-    top_k = 3
+async def return_response(vs, query: str, llm, top_k):
     retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": top_k})
-    retrieve_docs(test_query, retriever)
-
-    llm = ChatOpenAI(model="gpt-3.5-turbo")
-
     prompt = generate_prompt()
 
     custom_chain = ({"context": retriever | format_docs, "question": RunnablePassthrough()}
@@ -203,6 +179,40 @@ if __name__ == "__main__":
                     | StrOutputParser()
                     )
 
-    for resp in custom_chain.stream(test_query):
-        print(resp, end="", flush=True)
+    async for resp in custom_chain.astream(query):
+        yield resp
+
+
+if __name__ == "__main__":
+    file_path = "../arxiv_papers/arxiv-1301.3781"
+    codes = ["1301.3781",
+             # "1312.6114",
+             # "1409.0473",
+             # "1412.6980",
+             # "1505.04597",
+             # "1512.03385",
+             # "1810.04805",
+             # "2010.11929",
+             # "2109.01652",
+             # "2109.11978",
+             "2109.13226"]
+
+    dims = 384
+    index_name = "pdf-store-1"
+    logger.info("Creating Pinecone Index")
+    index = create_pinecone_index(index_name, dims)
+    logger.info(f"Loading and Chunking PDFs")
+    vs = load_pdf_into_index(codes, index_name)
+
+    # Add support for loading w Arxiv code alone
+    test_query = "Explain the architecture of an NNLM briefly"
+    top_k = 3
+    if not vs:
+        embeddings_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        vs = PineconeVectorStore(index_name=index_name, embedding=embeddings_model)
+    retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": top_k})
+    retrieve_docs(test_query, retriever)
+    llm = ChatOpenAI(model="gpt-3.5-turbo")
+
+    return_response(retriever, test_query, llm, top_k=3)
     sys.exit()
